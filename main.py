@@ -16,3 +16,11 @@ app.add_middleware(
 def read_root(): 
 
     return {"message": "Hello, FastAPI!"}
+
+
+if __name__ == "__main__":
+    import os
+
+    port = int(os.environ.get("PORT", 8000))  # Render에서 지정한 포트 사용
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
