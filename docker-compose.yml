@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 데이터베이스
+  postgres:
+    image: postgres:16
+    container_name: hansol_resume_db
+    environment:
+      POSTGRES_USER: hansol
+      POSTGRES_PASSWORD: hansol1234
+      POSTGRES_DB: resume_db
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hansol -d resume_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # pgAdmin (선택적 - DB 관리 GUI)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: hansol_resume_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@hansol.com
+      PGADMIN_DEFAULT_PASSWORD: admin1234
+      PGADMIN_LISTEN_PORT: 80
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local

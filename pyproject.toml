@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "hansol-resume-management"
+version = "0.1.0"
+description = "AI-powered resume management service backend"
+authors = ["duholee <duho.lee@docenty.ai>"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+fastapi = "^0.118.0"
+sqlalchemy = "^2.0.43"
+uvicorn = "^0.37.0"
+pydantic = "^2.11.9"
+asyncpg = "^0.30.0"
+psycopg2-binary = "^2.9.11"
+alembic = "^1.16.5"
+pydantic-settings = "^2.11.0"
+python-dotenv = "^1.1.1"
+aiofiles = "^25.1.0"
+python-multipart = "^0.0.20"
+greenlet = "^3.2.4"
+openai = "^1.58.1" # - Upstage API용
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.2"
+pytest-asyncio = "^1.2.0"
+httpx = "^0.28.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
