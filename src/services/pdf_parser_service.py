@@ -20,11 +20,8 @@ logger = logging.getLogger(__name__)
 
 class ExtractedEducation(BaseModel):
     """교육 정보 모델"""
-    period: str
     institution: str
-    major: str
     degree: str
-    grade: str
 
 
 class ExtractedWorkExperience(BaseModel):
@@ -163,25 +160,14 @@ class UpstagePDFExtractionService:
                                     "items": {
                                         "type": "object",
                                         "properties": {
-                                            "period": {
-                                                "type": "string",
-                                                "description": "The time period during which the education was pursued."
-                                            },
+
                                             "institution": {
                                                 "type": "string",
                                                 "description": "The name of the educational institution."
                                             },
-                                            "major": {
-                                                "type": "string",
-                                                "description": "The major or field of study."
-                                            },
                                             "degree": {
                                                 "type": "string",
                                                 "description": "The degree or qualification obtained."
-                                            },
-                                            "grade": {
-                                                "type": "string",
-                                                "description": "The academic grade or GPA."
                                             }
                                         }
                                     }
