@@ -11,8 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, update
 from sqlalchemy.orm import selectinload
 
-from src.entity.resume_entities import Resume, ResumeStatus, EducationLevel
+from src.entity.resume_entities import Resume, ResumeStatus, EducationLevel, ResumeEducation
 from src.services.pdf_parser_service import ExtractedResumeInfo
+from src.services.education_mapper import EducationMapper
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +52,25 @@ class ResumeService:
             # 파일 경로 생성 (실제로는 파일을 저장한 경로를 사용)
             file_path = f"uploads/{resume_id}_{original_filename}"
             
-            # 교육 정보에서 최고 학력 추출
-            education_level = self._extract_education_level(extracted_data.education)
+            # 교육 정보 처리 (모든 학력 정보 파싱 및 최종 학력 추출)
+            education_data_list = [
+                {
+                    'institution': edu.institution,
+                    'degree': edu.degree
+                } for edu in extracted_data.education
+            ]
+            
+            parsed_educations, final_education = EducationMapper.process_education_data(education_data_list)
+            
+            # 최종 학력 정보 추출
+            education_level = final_education['education_level'] if final_education else None
+            university = final_education['institution_name'] if final_education else None
+            graduation_year = None  # 졸업 년도는 저장하지 않음
             
             # 경력 정보 처리
             total_experience_years = self._calculate_experience_years(extracted_data.work_experience)
             current_position, current_company = self._extract_current_job(extracted_data.work_experience)
             previous_companies = self._extract_previous_companies(extracted_data.work_experience)
-            
-            # 대학교 정보 추출
-            university, major, graduation_year = self._extract_university_info(extracted_data.education)
             
             # JSON 데이터로 변환
             certifications_json = json.dumps([
@@ -78,16 +88,14 @@ class ResumeService:
                 } for lang in extracted_data.language_skills
             ], ensure_ascii=False)
             
-            # 전체 파싱 데이터를 JSON으로 저장
+            # 전체 파싱 데이터를 JSON으로 저장 (메타데이터 제거)
             parsed_data_json = json.dumps({
                 "education": [
                     {
-                        "period": edu.period,
                         "institution": edu.institution,
-                        "major": edu.major,
                         "degree": edu.degree,
-                        "grade": edu.grade
-                    } for edu in extracted_data.education
+                        "education_level": parsed_educations[i]['level_number'] if i < len(parsed_educations) else 0
+                    } for i, edu in enumerate(extracted_data.education)
                 ],
                 "work_experience": [
                     {
@@ -130,7 +138,6 @@ class ResumeService:
                 previous_companies=previous_companies,
                 education_level=education_level,
                 university=university,
-                major=major,
                 graduation_year=graduation_year,
                 certifications=certifications_json,
                 languages=languages_json,
@@ -144,6 +151,9 @@ class ResumeService:
             await db.commit()
             await db.refresh(resume)
             
+            # 모든 학력 정보를 ResumeEducation 테이블에 저장
+            await self._save_education_details(db, resume_id, parsed_educations)
+            
             logger.info(f"이력서 저장 완료: {resume_id} - {extracted_data.name}")
             return resume
             
@@ -152,48 +162,24 @@ class ResumeService:
             await db.rollback()
             raise
     
-    def _extract_education_level(self, education_list) -> Optional[EducationLevel]:
-        """교육 정보에서 최고 학력 추출"""
-        if not education_list:
-            return None
-        
-        # 학위 레벨 매핑
-        degree_levels = {
-            "고등학교": EducationLevel.HIGH_SCHOOL,
-            "전문대": EducationLevel.ASSOCIATE,
-            "전문대학": EducationLevel.ASSOCIATE,
-            "대학교": EducationLevel.BACHELOR,
-            "대학": EducationLevel.BACHELOR,
-            "학사": EducationLevel.BACHELOR,
-            "대학원": EducationLevel.MASTER,
-            "석사": EducationLevel.MASTER,
-            "박사": EducationLevel.DOCTORATE,
-            "박사과정": EducationLevel.DOCTORATE
-        }
-        
-        highest_level = EducationLevel.HIGH_SCHOOL
-        
-        for education in education_list:
-            degree = education.degree.lower() if education.degree else ""
-            institution = education.institution.lower() if education.institution else ""
+    async def _save_education_details(self, db: AsyncSession, resume_id: str, parsed_educations: list) -> None:
+        """모든 학력 정보를 ResumeEducation 테이블에 저장"""
+        try:
+            for education in parsed_educations:
+                resume_education = ResumeEducation(
+                    resume_id=resume_id,
+                    institution_name=education['institution_name'],
+                    education_level=education['education_level']
+                )
+                db.add(resume_education)
             
-            for keyword, level in degree_levels.items():
-                if keyword in degree or keyword in institution:
-                    if self._get_education_priority(level) > self._get_education_priority(highest_level):
-                        highest_level = level
-        
-        return highest_level
-    
-    def _get_education_priority(self, level: EducationLevel) -> int:
-        """학력 우선순위 반환 (숫자가 높을수록 높은 학력)"""
-        priority_map = {
-            EducationLevel.HIGH_SCHOOL: 1,
-            EducationLevel.ASSOCIATE: 2,
-            EducationLevel.BACHELOR: 3,
-            EducationLevel.MASTER: 4,
-            EducationLevel.DOCTORATE: 5
-        }
-        return priority_map.get(level, 0)
+            await db.commit()
+            logger.info(f"학력 정보 저장 완료: {resume_id} - {len(parsed_educations)}개 학력")
+            
+        except Exception as e:
+            logger.error(f"학력 정보 저장 중 오류: {str(e)}")
+            await db.rollback()
+            raise
     
     def _calculate_experience_years(self, work_experience_list) -> Optional[float]:
         """경력 년수 계산"""
@@ -244,30 +230,32 @@ class ResumeService:
         
         return json.dumps(previous_companies, ensure_ascii=False) if previous_companies else None
     
-    def _extract_university_info(self, education_list) -> tuple[Optional[str], Optional[str], Optional[int]]:
-        """대학교 정보 추출 (최고 학력 기준)"""
-        if not education_list:
-            return None, None, None
-        
-        # 첫 번째 교육 정보를 최고 학력으로 가정
-        highest_education = education_list[0]
-        
-        university = highest_education.institution
-        major = highest_education.major
-        
-        # 졸업 년도 추출 시도
-        graduation_year = None
-        if highest_education.period:
-            try:
-                # 기간에서 마지막 년도 추출
-                period_parts = highest_education.period.split('-')
-                if len(period_parts) >= 1:
-                    year_str = period_parts[-1].strip().split('.')[0]
-                    graduation_year = int(year_str)
-            except:
-                pass
-        
-        return university, major, graduation_year
+    async def get_education_details(self, db: AsyncSession, resume_id: str) -> list[ResumeEducation]:
+        """특정 이력서의 모든 학력 정보 조회"""
+        try:
+            result = await db.execute(
+                select(ResumeEducation)
+                .where(ResumeEducation.resume_id == resume_id)
+                .order_by(ResumeEducation.education_level.desc())
+            )
+            return result.scalars().all()
+        except Exception as e:
+            logger.error(f"학력 정보 조회 중 오류: {str(e)}")
+            return []
+    
+    async def get_final_education(self, db: AsyncSession, resume_id: str) -> Optional[ResumeEducation]:
+        """특정 이력서의 최종 학력 정보 조회"""
+        try:
+            result = await db.execute(
+                select(ResumeEducation)
+                .where(ResumeEducation.resume_id == resume_id)
+                .order_by(ResumeEducation.education_level.desc())
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"최종 학력 정보 조회 중 오류: {str(e)}")
+            return None
     
     async def get_resume_by_id(self, db: AsyncSession, resume_id: str) -> Optional[Resume]:
         """ID로 이력서 조회"""
@@ -303,6 +291,57 @@ class ResumeService:
             return result.scalars().all()
         except Exception as e:
             logger.error(f"이력서 전체 조회 중 오류: {str(e)}")
+            return []
+    
+    async def get_resumes_with_filters(
+        self, 
+        db: AsyncSession, 
+        max_age: Optional[int] = None,
+        max_education_level: Optional[int] = None,
+        limit: int = 100, 
+        offset: int = 0
+    ) -> list[Resume]:
+        """필터를 적용한 이력서 조회"""
+        try:
+            query = select(Resume)
+            
+            # 나이 필터 (생년으로 계산)
+            if max_age is not None:
+                from datetime import datetime
+                current_year = datetime.now().year
+                min_birth_year = current_year - max_age
+                query = query.where(Resume.birth_year >= min_birth_year)
+            
+            # 학력 레벨 필터
+            if max_education_level is not None:
+                # 숫자를 EducationLevel enum으로 변환
+                level_mapping = {
+                    1: EducationLevel.ELEMENTARY,
+                    2: EducationLevel.MIDDLE,
+                    3: EducationLevel.HIGH_SCHOOL,
+                    4: EducationLevel.BACHELOR,
+                    5: EducationLevel.MASTER,
+                    6: EducationLevel.DOCTORATE,
+                }
+                
+                # 해당 레벨 이상의 학력을 가진 이력서만 조회
+                target_levels = []
+                for level_num, level_enum in level_mapping.items():
+                    if level_num >= max_education_level:
+                        target_levels.append(level_enum)
+                
+                if target_levels:
+                    query = query.where(Resume.education_level.in_(target_levels))
+            
+            result = await db.execute(
+                query
+                .order_by(Resume.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            return result.scalars().all()
+        except Exception as e:
+            logger.error(f"필터 적용 이력서 조회 중 오류: {str(e)}")
             return []
 
     async def delete_resume_by_id(self, db: AsyncSession, resume_id: str, hard: bool = False) -> bool:

@@ -107,7 +107,7 @@ from src.controllers.accounttest_router import router as accounttest_router
 from src.controllers.pdf_parser_router import router as pdf_parser_router
 
 app.include_router(accounttest_router, prefix="/api/accounttest", tags=["AccountTest"])
-app.include_router(pdf_parser_router, prefix="/api/pdf", tags=["PDF Parser - Upstage API"]) 
+app.include_router(pdf_parser_router, prefix="/api/pdf", tags=["PDF Parser - Upstage API"])
 
 
 # ========== 기본 엔드포인트 ==========

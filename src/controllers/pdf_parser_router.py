@@ -11,6 +11,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from typing import Optional
 import logging
+from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.services.pdf_parser_service import (
@@ -24,6 +25,16 @@ from src.configs.webconfig import get_settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def calculate_age(birth_year: Optional[int]) -> Optional[int]:
+    """생년월일에서 현재 나이를 계산합니다."""
+    if birth_year is None:
+        return None
+    
+    current_year = datetime.now().year
+    age = current_year - birth_year
+    return age if age >= 0 else None
 
 
 def get_upstage_service() -> UpstagePDFExtractionService:
@@ -119,8 +130,7 @@ async def extract_resume_info_raw(
         logger.info(f"이력서 정보 추출 성공 (원본 응답): {file.filename}")
         return {
             "success": True,
-            "raw_data": result.raw_response,
-            "metadata": result.metadata
+            "raw_data": result.raw_response
         }
         
     except HTTPException:
@@ -269,12 +279,11 @@ async def extract_and_save_resume(
                 "current_position": saved_resume.current_position,
                 "current_company": saved_resume.current_company,
                 "total_experience_years": saved_resume.total_experience_years,
-                "education_level": saved_resume.education_level.value if saved_resume.education_level else None,
+                "education_level": saved_resume.to_dict()["education_level"],
                 "university": saved_resume.university,
-                "major": saved_resume.major,
-                "created_at": saved_resume.created_at.isoformat() if saved_resume.created_at else None
+                "birth_year": saved_resume.birth_year,
+                "age": calculate_age(saved_resume.birth_year)
             },
-            "metadata": extraction_result.metadata
         }
         
     except HTTPException:
@@ -291,6 +300,8 @@ async def extract_and_save_resume(
 async def get_all_resumes(
     limit: int = 20,
     offset: int = 0,
+    age: Optional[int] = None,
+    education_level: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -299,6 +310,8 @@ async def get_all_resumes(
     Args:
         limit: 조회할 개수 (기본값: 20)
         offset: 건너뛸 개수 (기본값: 0)
+        age: 최대 나이 필터 (이하) - 예: age=30
+        education_level: 최소 학력 레벨 필터 (이상) - 예: education_level=4 (대학교 학사 이상)
         db: 데이터베이스 세션
         
     Returns:
@@ -306,13 +319,32 @@ async def get_all_resumes(
     """
     try:
         resume_service = ResumeService()
-        resumes = await resume_service.get_all_resumes(db, limit, offset)
+        
+        # 필터가 있는 경우 필터 적용 조회, 없는 경우 전체 조회
+        if age is not None or education_level is not None:
+            resumes = await resume_service.get_resumes_with_filters(
+                db, 
+                max_age=age, 
+                max_education_level=education_level,
+                limit=limit, 
+                offset=offset
+            )
+            filter_info = []
+            if age is not None:
+                filter_info.append(f"age <= {age}")
+            if education_level is not None:
+                filter_info.append(f"education_level >= {education_level}")
+            filter_description = ", ".join(filter_info)
+        else:
+            resumes = await resume_service.get_all_resumes(db, limit, offset)
+            filter_description = "all"
         
         return {
             "success": True,
             "total_count": len(resumes),
             "limit": limit,
             "offset": offset,
+            "filter": filter_description,
             "resumes": [
                 {
                     "id": resume.id,
@@ -322,12 +354,12 @@ async def get_all_resumes(
                     "current_position": resume.current_position,
                     "current_company": resume.current_company,
                     "total_experience_years": resume.total_experience_years,
-                    "education_level": resume.education_level.value if resume.education_level else None,
+                    "education_level": resume.to_dict()["education_level"],
                     "university": resume.university,
-                    "major": resume.major,
                     "status": resume.status.value if resume.status else None,
                     "original_filename": resume.original_filename,
-                    "created_at": resume.created_at.isoformat() if resume.created_at else None,
+                    "birth_year": resume.birth_year,
+                    "age": calculate_age(resume.birth_year),
                     "updated_at": resume.updated_at.isoformat() if resume.updated_at else None
                 } for resume in resumes
             ]
@@ -381,6 +413,105 @@ async def get_resume_by_id(
         )
 
 
+@router.get("/resumes/{resume_id}/education")
+async def get_resume_education(
+    resume_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    특정 이력서의 모든 학력 정보를 조회합니다.
+    
+    Args:
+        resume_id: 이력서 ID
+        db: 데이터베이스 세션
+        
+    Returns:
+        dict: 학력 정보 목록
+    """
+    try:
+        resume_service = ResumeService()
+        
+        # 이력서 존재 여부 확인
+        resume = await resume_service.get_resume_by_id(db, resume_id)
+        if not resume:
+            raise HTTPException(
+                status_code=404,
+                detail=f"ID {resume_id}에 해당하는 이력서를 찾을 수 없습니다."
+            )
+        
+        # 모든 학력 정보 조회
+        education_details = await resume_service.get_education_details(db, resume_id)
+        
+        return {
+            "success": True,
+            "resume_id": resume_id,
+            "education_count": len(education_details),
+            "education_details": [edu.to_dict() for edu in education_details]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"학력 정보 조회 중 오류: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"서버 오류: {str(e)}"
+        )
+
+
+@router.get("/resumes/{resume_id}/education/final")
+async def get_final_education(
+    resume_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    특정 이력서의 최종 학력 정보를 조회합니다.
+    
+    Args:
+        resume_id: 이력서 ID
+        db: 데이터베이스 세션
+        
+    Returns:
+        dict: 최종 학력 정보
+    """
+    try:
+        resume_service = ResumeService()
+        
+        # 이력서 존재 여부 확인
+        resume = await resume_service.get_resume_by_id(db, resume_id)
+        if not resume:
+            raise HTTPException(
+                status_code=404,
+                detail=f"ID {resume_id}에 해당하는 이력서를 찾을 수 없습니다."
+            )
+        
+        # 최종 학력 정보 조회
+        final_education = await resume_service.get_final_education(db, resume_id)
+        
+        if not final_education:
+            return {
+                "success": True,
+                "resume_id": resume_id,
+                "final_education": None,
+                "message": "학력 정보가 없습니다."
+            }
+        
+        return {
+            "success": True,
+            "resume_id": resume_id,
+            "final_education": final_education.to_dict()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"최종 학력 정보 조회 중 오류: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"서버 오류: {str(e)}"
+        )
+
+
 @router.get("/resumes/search/{name}")
 async def search_resumes_by_name(
     name: str,
@@ -413,9 +544,10 @@ async def search_resumes_by_name(
                     "current_position": resume.current_position,
                     "current_company": resume.current_company,
                     "total_experience_years": resume.total_experience_years,
-                    "education_level": resume.education_level.value if resume.education_level else None,
+                    "education_level": resume.to_dict()["education_level"],
                     "university": resume.university,
-                    "major": resume.major,
+                    "birth_year": resume.birth_year,
+                    "age": calculate_age(resume.birth_year),
                     "status": resume.status.value if resume.status else None,
                     "created_at": resume.created_at.isoformat() if resume.created_at else None
                 } for resume in resumes
@@ -430,21 +562,6 @@ async def search_resumes_by_name(
         )
 
 
-@router.get("/health")
-async def health_check():
-    """
-    Upstage API PDF 추출 서비스 헬스 체크
-    
-    Returns:
-        dict: 서비스 상태
-    """
-    settings = get_settings()
-    return {
-        "status": "healthy" if settings.upstage_api_key else "unhealthy",
-        "service": "Upstage PDF Information Extraction Service",
-        "api_key_configured": bool(settings.upstage_api_key),
-        "supported_extensions": [".pdf"]
-    }
 
 
 @router.delete("/resumes/{resume_id}")
